@@ -1,0 +1,59 @@
+name: Build ntnotes.exe (Rust)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/src/**"
+      - ".github/workflows/build-ntnotes.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate the ntnotes project
+        id: find
+        shell: pwsh
+        run: |
+          $hit = Get-ChildItem -Path . -Filter Cargo.toml -Recurse -Depth 2 -File |
+            Where-Object { $_.FullName -notmatch '[\\/](target|node_modules|\.git)[\\/]' } |
+            Where-Object { (Get-Content $_.FullName -Raw) -match '(?m)^name\s*=\s*"ntnotes"' } |
+            Select-Object -First 1
+          if (-not $hit) {
+            Write-Host "Files in repo:"
+            Get-ChildItem -Recurse -Depth 2 -Name | Where-Object { $_ -notmatch '^\.git[\\/]' }
+            Write-Host "::error::No Cargo.toml with name = ""ntnotes"" was found. Commit the ntnotes project files (Cargo.toml, Cargo.lock, src/) to the repository, then run this workflow again."
+            exit 1
+          }
+          $dir = $hit.DirectoryName -replace '\\', '/'
+          Write-Host "Found project in $dir"
+          $missing = @('Cargo.lock', 'src/main.rs', 'src/app.rs', 'src/auth.rs', 'src/config.rs', 'src/model.rs', 'src/secure.rs', 'src/store.rs', 'src/worker.rs') |
+            Where-Object { -not (Test-Path "$dir/$_") }
+          if ($missing) {
+            Write-Host "Files in project folder:"
+            Get-ChildItem -Path $dir -Recurse -Depth 2 -Name | Where-Object { $_ -notmatch '^(\.git|target)[\\/]' }
+            Write-Host "::error::Missing from $dir : $($missing -join ', '). Keep the original folder layout: all .rs files go inside a folder named src."
+            exit 1
+          }
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ steps.find.outputs.dir }}
+
+      - name: Build release exe
+        shell: pwsh
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ntnotes-windows
+          path: ${{ steps.find.outputs.dir }}/target/release/ntnotes.exe
+          if-no-files-found: error
